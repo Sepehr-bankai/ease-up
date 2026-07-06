@@ -33,6 +33,8 @@ from bs4 import BeautifulSoup
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120 Safari/537.36"}
 LINKS_FILE = Path("links.txt")
 PROGRESS_FILE = Path(".product_names_progress.json")
+SCRAPE_PROGRESS_FILE = Path(".product_scrape_progress.json")
+PRODUCTS_DIR = Path("products_merged")
 
 
 def clean_text(value):
@@ -139,107 +141,6 @@ def product_names(url):
     }
 
 
-def price_value(value):
-    if not value:
-        return None
-    value = value.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
-    digits = re.sub(r"[^0-9]", "", value)
-    return digits or None
-
-
-def product_data(soup):
-    price = soup.select_one(".wd-single-price .price, p.price")
-    regular = price.select_one("del") if price else None
-    sale = price.select_one("ins") if price else None
-    amount = price.select_one(".woocommerce-Price-amount") if price else None
-    regular_price = price_value((regular or amount).get_text(" ", strip=True)) if regular or amount else None
-    sale_price = price_value(sale.get_text(" ", strip=True)) if sale else None
-
-    short = soup.select_one(".woocommerce-product-details__short-description")
-    description = soup.select_one("#tab-content-description, #tab-description")
-    attributes = {}
-    for row in soup.select("table.shop_attributes tr"):
-        name, value = row.select_one("th"), row.select_one("td")
-        if name and value:
-            attributes[clean_text(name.get_text(" ", strip=True))] = clean_text(value.get_text(" ", strip=True))
-
-    images = []
-    for tag in soup.select(".woocommerce-product-gallery [data-large_image], .woocommerce-product-gallery a[href]"):
-        url = tag.get("data-large_image") or tag.get("href")
-        if url and url.startswith(("http://", "https://")):
-            images.append(url)
-    title = soup.select_one("h1.product_title, h1.entry-title")
-    return {
-        "title": clean_text(title.get_text(" ", strip=True)) if title else None,
-        "english_name": english_name(soup),
-        "regular_price": regular_price,
-        "sale_price": sale_price,
-        "categories": [clean_text(tag.get_text(" ", strip=True)) for tag in soup.select(".posted_in a")],
-        "short_description": clean_text(short.get_text("\n", strip=True)) if short else None,
-        "description": clean_text(description.get_text("\n", strip=True)) if description else None,
-        "attributes": attributes,
-        "images": list(dict.fromkeys(images)),
-    }
-
-
-def download_image(url, path):
-    for attempt in range(3):
-        try:
-            response = requests.get(url, headers=HEADERS, timeout=30)
-            response.raise_for_status()
-            temporary = path.with_suffix(path.suffix + ".tmp")
-            temporary.write_bytes(response.content)
-            temporary.replace(path)
-            return
-        except requests.RequestException:
-            if attempt == 2:
-                raise
-            time.sleep(2**attempt)
-
-
-def scrape_product(url, index, output):
-    soup = BeautifulSoup(get(url), "html.parser")
-    data = product_data(soup)
-    missing = [key for key in ("title", "english_name", "regular_price", "images") if not data[key]]
-    if missing:
-        raise ValueError(f"Missing {', '.join(missing)} at {url}")
-
-    product_dir = output / f"product_{index:05d}"
-    images_dir = product_dir / "images"
-    images_dir.mkdir(parents=True, exist_ok=True)
-    local_images = []
-    for position, image_url in enumerate(data["images"], 1):
-        suffix = Path(urlparse(image_url).path).suffix.lower()
-        if suffix not in {".gif", ".jpeg", ".jpg", ".png", ".webp"}:
-            suffix = ".jpg"
-        image_path = images_dir / f"product_{index:05d}_{position}{suffix}"
-        download_image(image_url, image_path)
-        local_images.append(image_path.relative_to(product_dir).as_posix())
-    data["local_images"] = local_images
-    data["source_url"] = url
-    save_json(product_dir / "data.json", data)
-
-
-def scrape_products(urls, output=PRODUCTS_DIR, progress=SCRAPE_PROGRESS_FILE):
-    state = json.loads(progress.read_text(encoding="utf-8")) if progress.exists() else {}
-    done = set(state.get("completed_urls", []))
-    failures = 0
-    for index, url in enumerate(urls, 1):
-        if url in done:
-            continue
-        try:
-            print(f"[{index}/{len(urls)}] Scraping {url}")
-            scrape_product(url, index, output)
-        except (OSError, ValueError, requests.RequestException) as error:
-            failures += 1
-            print(f"  failed: {error}")
-            continue
-        done.add(url)
-        save_json(progress, {**state, "product_urls": urls, "completed_urls": list(done)})
-    print(f"Saved {len(done)} product(s) to {output}; {failures} failed")
-    return failures
-
-
 def fetch_name(url):
     try:
         return product_names(url), None
@@ -336,6 +237,18 @@ def self_test():
     assert english_name(soup) == "Test Product 20ml"
     soup = BeautifulSoup('<h1 class="product_title">نام فارسی</h1><div>Fallback Product Name 10ml</div>', "html.parser")
     assert english_name(soup) == "Fallback Product Name 10ml"
+    soup = BeautifulSoup(
+        '<h1 class="product_title">نام محصول</h1><p class="product-en-title">Test Product</p>'
+        '<p class="price"><del><span class="woocommerce-Price-amount">۲۰۰,۰۰۰ تومان</span></del>'
+        '<ins><span class="woocommerce-Price-amount">۱۵۰,۰۰۰ تومان</span></ins></p>'
+        '<span class="posted_in"><a>مراقبت پوست</a></span>'
+        '<table class="shop_attributes"><tr><th>برند</th><td>تست</td></tr></table>'
+        '<div class="woocommerce-product-gallery"><a href="https://example.com/a.webp"></a></div>',
+        "html.parser",
+    )
+    extracted = product_data(soup)
+    assert extracted["regular_price"] == "200000" and extracted["sale_price"] == "150000"
+    assert extracted["attributes"] == {"برند": "تست"} and len(extracted["images"]) == 1
     with tempfile.TemporaryDirectory() as folder:
         root = Path(folder)
         links = root / "links.json"
@@ -372,9 +285,10 @@ def worker_count(value):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", nargs="?", default="names", choices=("names", "merge-names", "self-test"))
+    parser.add_argument("command", nargs="?", default="scrape", choices=("scrape", "names", "merge-names", "self-test"))
     parser.add_argument("paths", nargs="*")
     parser.add_argument("--workers", type=worker_count, default=5)
+    parser.add_argument("--output", type=Path, default=PRODUCTS_DIR)
     args = parser.parse_args()
     if args.command == "self-test":
         self_test()
@@ -383,16 +297,20 @@ def main():
     else:
         links_path = Path(args.paths[0]) if args.paths else LINKS_FILE
         input_hash = hashlib.sha256(links_path.read_bytes()).hexdigest()
-        state = json.loads(PROGRESS_FILE.read_text(encoding="utf-8")) if PROGRESS_FILE.exists() else {}
+        progress = PROGRESS_FILE if args.command == "names" else SCRAPE_PROGRESS_FILE
+        state = json.loads(progress.read_text(encoding="utf-8")) if progress.exists() else {}
         if state.get("input_hash") == input_hash and state.get("product_urls"):
             urls = state["product_urls"]
             print(f"Loaded {len(urls)} cached product URLs")
         else:
             urls = discover_product_urls(load_inputs(links_path), args.workers)
             state = {"input_hash": input_hash, "product_urls": urls, "completed_urls": []}
-            save_json(PROGRESS_FILE, state)
+            save_json(progress, state)
         print(f"Found {len(urls)} unique product URLs")
-        export_names(urls, args.workers, state)
+        if args.command == "names":
+            export_names(urls, args.workers, state)
+        else:
+            scrape_products(urls, args.output, progress)
 
 
 if __name__ == "__main__":
