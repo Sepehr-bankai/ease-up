@@ -139,6 +139,107 @@ def product_names(url):
     }
 
 
+def price_value(value):
+    if not value:
+        return None
+    value = value.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
+    digits = re.sub(r"[^0-9]", "", value)
+    return digits or None
+
+
+def product_data(soup):
+    price = soup.select_one(".wd-single-price .price, p.price")
+    regular = price.select_one("del") if price else None
+    sale = price.select_one("ins") if price else None
+    amount = price.select_one(".woocommerce-Price-amount") if price else None
+    regular_price = price_value((regular or amount).get_text(" ", strip=True)) if regular or amount else None
+    sale_price = price_value(sale.get_text(" ", strip=True)) if sale else None
+
+    short = soup.select_one(".woocommerce-product-details__short-description")
+    description = soup.select_one("#tab-content-description, #tab-description")
+    attributes = {}
+    for row in soup.select("table.shop_attributes tr"):
+        name, value = row.select_one("th"), row.select_one("td")
+        if name and value:
+            attributes[clean_text(name.get_text(" ", strip=True))] = clean_text(value.get_text(" ", strip=True))
+
+    images = []
+    for tag in soup.select(".woocommerce-product-gallery [data-large_image], .woocommerce-product-gallery a[href]"):
+        url = tag.get("data-large_image") or tag.get("href")
+        if url and url.startswith(("http://", "https://")):
+            images.append(url)
+    title = soup.select_one("h1.product_title, h1.entry-title")
+    return {
+        "title": clean_text(title.get_text(" ", strip=True)) if title else None,
+        "english_name": english_name(soup),
+        "regular_price": regular_price,
+        "sale_price": sale_price,
+        "categories": [clean_text(tag.get_text(" ", strip=True)) for tag in soup.select(".posted_in a")],
+        "short_description": clean_text(short.get_text("\n", strip=True)) if short else None,
+        "description": clean_text(description.get_text("\n", strip=True)) if description else None,
+        "attributes": attributes,
+        "images": list(dict.fromkeys(images)),
+    }
+
+
+def download_image(url, path):
+    for attempt in range(3):
+        try:
+            response = requests.get(url, headers=HEADERS, timeout=30)
+            response.raise_for_status()
+            temporary = path.with_suffix(path.suffix + ".tmp")
+            temporary.write_bytes(response.content)
+            temporary.replace(path)
+            return
+        except requests.RequestException:
+            if attempt == 2:
+                raise
+            time.sleep(2**attempt)
+
+
+def scrape_product(url, index, output):
+    soup = BeautifulSoup(get(url), "html.parser")
+    data = product_data(soup)
+    missing = [key for key in ("title", "english_name", "regular_price", "images") if not data[key]]
+    if missing:
+        raise ValueError(f"Missing {', '.join(missing)} at {url}")
+
+    product_dir = output / f"product_{index:05d}"
+    images_dir = product_dir / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    local_images = []
+    for position, image_url in enumerate(data["images"], 1):
+        suffix = Path(urlparse(image_url).path).suffix.lower()
+        if suffix not in {".gif", ".jpeg", ".jpg", ".png", ".webp"}:
+            suffix = ".jpg"
+        image_path = images_dir / f"product_{index:05d}_{position}{suffix}"
+        download_image(image_url, image_path)
+        local_images.append(image_path.relative_to(product_dir).as_posix())
+    data["local_images"] = local_images
+    data["source_url"] = url
+    save_json(product_dir / "data.json", data)
+
+
+def scrape_products(urls, output=PRODUCTS_DIR, progress=SCRAPE_PROGRESS_FILE):
+    state = json.loads(progress.read_text(encoding="utf-8")) if progress.exists() else {}
+    done = set(state.get("completed_urls", []))
+    failures = 0
+    for index, url in enumerate(urls, 1):
+        if url in done:
+            continue
+        try:
+            print(f"[{index}/{len(urls)}] Scraping {url}")
+            scrape_product(url, index, output)
+        except (OSError, ValueError, requests.RequestException) as error:
+            failures += 1
+            print(f"  failed: {error}")
+            continue
+        done.add(url)
+        save_json(progress, {**state, "product_urls": urls, "completed_urls": list(done)})
+    print(f"Saved {len(done)} product(s) to {output}; {failures} failed")
+    return failures
+
+
 def fetch_name(url):
     try:
         return product_names(url), None

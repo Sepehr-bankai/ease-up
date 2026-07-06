@@ -1,123 +1,164 @@
-# خط لوله جمع‌آوری و انتقال محصولات به ووکامرس
+# Product Scraping and WooCommerce Synchronization Pipeline
 
-## معرفی کوتاه
+An end-to-end Python pipeline that discovers product pages, extracts structured product data, downloads gallery images, and safely synchronizes the result with WordPress and WooCommerce.
 
-این پروژه یک جریان خودکار برای آماده‌سازی و انتقال اطلاعات محصول است و دو بخش اصلی دارد:
+The pipeline is deliberately split into two responsibilities:
 
-- جمع‌آوری نشانی محصولات و نام فارسی و انگلیسی آن‌ها از وب‌سایت هدف
-- اعتبارسنجی داده‌ها، آپلود رسانه از طریق `WordPress REST API` و ساخت یا به‌روزرسانی محصول در `WooCommerce REST API`
+- `product_pipeline.py` owns discovery, scraping, image downloads, local persistence, and scrape resume state.
+- `api-product-post.py` owns validation, taxonomy resolution, media upload, product synchronization, and upload state.
 
-اسکریپر فعلی فقط نام فارسی و انگلیسی را جمع‌آوری می‌کند و آن‌ها را به فایل‌های محصول موجود می‌افزاید. اطلاعاتی مانند قیمت، توضیحات، دسته‌بندی، ویژگی‌ها و مسیر تصاویر باید از قبل در فایل هر محصول وجود داشته باشند.
+<p align="center">
+  <img src="https://media.giphy.com/media/LmNwrBhejkK9EFP504/giphy.gif" width="420" alt="Developer building an automation pipeline">
+</p>
 
-## این پروژه چه مشکلی را حل می‌کند؟
+> The scraper converts unstable web pages into a stable local data contract. The uploader consumes that contract without needing to understand the source website.
 
-جمع‌آوری دستی اطلاعات، آپلود تکراری تصاویر و ساخت تک‌به‌تک محصولات در `WooCommerce` زمان‌بر و مستعد خطاست. این پروژه بخش قابل‌توجهی از مسیر زیر را خودکار می‌کند:
-
-1. کشف صفحات محصول از صفحات دسته‌بندی
-2. جمع‌آوری و یکسان‌سازی نام محصولات
-3. تکمیل فایل‌های محصول موجود
-4. اعتبارسنجی داده و تصاویر
-5. ساخت دسته‌بندی‌ها و ویژگی‌های لازم
-6. آپلود رسانه و ایجاد یا به‌روزرسانی محصول
-
-## قابلیت‌های اصلی
-
-- دریافت ورودی از `links.txt` یا فایل `JSON`
-- تشخیص تعداد صفحات دسته‌بندی و ساخت نشانی صفحات بعدی
-- پردازش هم‌زمان درخواست‌ها با تعداد کارگر محدود
-- حذف نشانی‌های تکراری با حفظ ترتیب
-- ذخیره امن فایل‌های `JSON` با فایل موقت
-- ادامه جمع‌آوری از وضعیت ذخیره‌شده در `.product_names_progress.json`
-- تطبیق دقیق و نرمال‌شده نام‌ها و تولید پیشنهاد برای موارد ناموفق
-- اعتبارسنجی عنوان، نام انگلیسی، قیمت و مسیر تصاویر پیش از آپلود
-- حالت آزمایشی بدون تغییر سرور
-- ساخت یا استفاده مجدد از دسته‌بندی، ویژگی و مقدار ویژگی
-- جلوگیری از آپلود دوباره رسانه با هش `SHA-256` و شناسه رسانه
-- جلوگیری از ایجاد محصول تکراری با `SKU`
-- تلاش مجدد برای خطاهای شبکه و کدهای موقت `HTTP`
-- ثبت وضعیت محصولات، رسانه‌ها، نگاشت‌ها و خطاها در `SQLite`
-- ایجاد محصول به‌صورت پیش‌نویس و انتشار فقط با گزینه صریح
-
-## ساختار پروژه
-
-| مسیر | کاربرد |
-|---|---|
-| `product_pipeline.py` | ورودی اصلی جمع‌آوری نام‌ها، تشخیص صفحه‌بندی، ادامه کار و ادغام نام انگلیسی |
-| `api-product-post.py` | ورودی اصلی اعتبارسنجی، آپلود رسانه و ایجاد یا به‌روزرسانی محصول |
-| `requirements.txt` | وابستگی‌های اجرایی `requests` و `beautifulsoup4` |
-| `.env` | اطلاعات محرمانه اتصال؛ در `Git` نادیده گرفته می‌شود |
-| `.env.example` | الگوی نام متغیرهای محیطی بدون مقدار واقعی |
-| `links.txt` | ورودی پیش‌فرض اسکریپر؛ هر خط یک نشانی محصول یا دسته‌بندی |
-| `.product_names_progress.json` | وضعیت ادامه اسکریپر و فهرست نشانی‌های تکمیل‌شده |
-| `product_names.json` | نام فارسی و انگلیسی محصولات جمع‌آوری‌شده |
-| `unmatched_products.json` | گزارش فایل‌هایی که نام انگلیسی آن‌ها با اطمینان تطبیق داده نشده است |
-| `products_merged/product_*/data.json` | ورودی ساختاریافته هر محصول برای آپلودر |
-| `products_merged/product_*/images/` | تصاویر محلی هر محصول |
-| `upload_state.sqlite3` | وضعیت رسانه‌ها، محصولات، نگاشت‌ها، خطاها و نشانگر ادامه آپلود |
-
-فایل‌ها و پوشه‌های خروجی در شروع کار ممکن است وجود نداشته باشند و هنگام اجرای مراحل ساخته شوند.
-
-## روند کار اسکریپر
-
-ورودی اسکریپر تابع `main` در `product_pipeline.py` است.
-
-1. `load_inputs` نشانی‌ها را از `links.txt` یا فایل `JSON` می‌خواند و معتبر بودن `http` یا `https` را بررسی می‌کند.
-2. `discover_product_urls` نشانی مستقیم محصول را جدا می‌کند و برای ورودی‌های دسته‌بندی، `category_page` را اجرا می‌کند.
-3. `category_page` با انتخابگر `a.product-image-link[href]` محصولات را پیدا می‌کند. اعداد `.page-numbers` نیز تعداد صفحات را مشخص می‌کنند.
-4. صفحات دوم به بعد با الگوی `/page/<number>/` ساخته و هم‌زمان دریافت می‌شوند.
-5. `dict.fromkeys` نشانی‌های تکراری را بدون برهم زدن ترتیب حذف می‌کند.
-6. `product_names` عنوان فارسی و `english_name` نام انگلیسی را از `HTML` استخراج می‌کنند.
-7. `export_names` نتایج را در `product_names.json` و وضعیت را در `.product_names_progress.json` ذخیره می‌کند.
-8. درخواست ناموفق چاپ می‌شود و در اجرای بعدی دوباره در صف قرار می‌گیرد. توقف با صفحه‌کلید نیز وضعیت فعلی را نگه می‌دارد.
-9. فرمان `merge-names` با `merge_names` نام انگلیسی را به فایل‌های محصول اضافه می‌کند. موارد بدون تطبیق در `unmatched_products.json` ثبت می‌شوند.
-
-## روند کار آپلودر ووکامرس
-
-ورودی آپلودر تابع `main` در `api-product-post.py` است.
-
-1. `load_env` تنظیمات را از `.env` می‌خواند و `select_products` پوشه‌های درخواستی را از `products_merged` انتخاب می‌کند.
-2. بدون `--commit`، تابع `dry_run` فقط داده و تصاویر را با `load_product` اعتبارسنجی می‌کند.
-3. در اجرای واقعی، `SiteAPI.check_permissions` دسترسی `WooCommerce` و مجوز آپلود رسانه در `WordPress` را بررسی می‌کند.
-4. `Importer.run` داده را می‌خواند، دسته‌بندی‌ها و ویژگی‌ها را با `resolve_taxonomies` آماده می‌کند و تصاویر را به `ensure_images` می‌سپارد.
-5. `ensure_media` ابتدا وضعیت `SQLite` و هش فایل را بررسی می‌کند؛ سپس رسانه موجود را پیدا می‌کند یا با `POST` در `WordPress REST API` آپلود می‌کند.
-6. شناسه رسانه‌ها در آرایه `images` قرار می‌گیرد و `save_product` بدنه محصول شامل عنوان، قیمت، توضیحات، دسته‌بندی‌ها، ویژگی‌ها، تصاویر و نام انگلیسی را می‌سازد.
-7. محصول با `SKU` برابر نام پوشه، مانند `product_00001`، پیدا می‌شود. محصول موجود با `PUT` به‌روزرسانی و محصول جدید با `POST` ساخته می‌شود.
-8. `State` نتیجه موفق یا مرحله و متن خطا را در `upload_state.sqlite3` ذخیره می‌کند. نشانگر اجرای گروهی فقط پس از موفقیت جلو می‌رود.
-
-## جریان کلی داده
+## What the pipeline does
 
 ```text
-وب‌سایت هدف
-    ↓
-کشف صفحه‌ها و نام‌ها در product_pipeline.py
-    ↓
-product_names.json و .product_names_progress.json
-    ↓
-ادغام نام انگلیسی در data.json محصولات موجود
-    ↓
-اعتبارسنجی داده و تصاویر در api-product-post.py
-    ↓
-آپلود تصویر در WordPress REST API
-    ↓
-اتصال شناسه رسانه به بدنه محصول
-    ↓
-ایجاد یا به‌روزرسانی محصول در WooCommerce REST API
+Product/category URLs
+        |
+        v
+Discover pages and pagination
+        |
+        v
+Extract product fields and gallery URLs
+        |
+        v
+Download images and write products_merged/product_*/data.json
+        |
+        v
+Validate local product data
+        |
+        v
+Resolve WooCommerce categories and attributes
+        |
+        v
+Upload or reuse WordPress media
+        |
+        v
+Create or update WooCommerce products
+        |
+        v
+Persist state in SQLite
 ```
 
-## نصب و راه‌اندازی
+## Features
 
-پروژه به `Python 3.11` یا نسخه جدیدتر نیاز دارد.
+### Scraping
+
+- Accepts direct product URLs and category URLs from text or JSON.
+- Detects category pagination and generates remaining page URLs.
+- Deduplicates discovered product URLs while preserving order.
+- Extracts:
+  - Persian and English names
+  - Regular and sale prices
+  - Categories
+  - Short and full descriptions
+  - Product attributes
+  - Full-size gallery image URLs
+- Normalizes Persian and Arabic price digits for WooCommerce.
+- Downloads images with bounded retries and atomic file replacement.
+- Writes one isolated folder per product under `products_merged`.
+- Resumes from `.product_scrape_progress.json` after interruption.
+
+### WooCommerce synchronization
+
+- Performs an offline dry run before any server write.
+- Validates required fields, prices, image types, and safe local paths.
+- Creates or reuses categories, attributes, and attribute terms.
+- Uploads images through the WordPress REST API.
+- Reuses existing media using SHA-256 hashes and stable slugs.
+- Creates or updates products through the WooCommerce REST API.
+- Uses the product folder name as a stable SKU.
+- Skips unchanged payloads.
+- Stores product, media, mapping, failure, and resume state in SQLite.
+- Retries temporary network and API failures.
+- Creates drafts by default; publishing requires an explicit option.
+
+<p align="center">
+  <img src="https://media.giphy.com/media/coxQHKASG60HrHtvkt/giphy.gif" width="420" alt="Automated API synchronization workflow">
+</p>
+
+> Synchronization is idempotent: rerunning the uploader should reuse unchanged media and update the same SKU instead of creating duplicates.
+
+## Project structure
+
+| Path | Responsibility |
+|---|---|
+| `product_pipeline.py` | URL discovery, pagination, extraction, image downloads, product-folder creation, and scrape progress |
+| `api-product-post.py` | Validation, WordPress media upload, WooCommerce synchronization, retries, and state management |
+| `requirements.txt` | Runtime dependencies |
+| `.env.example` | Credential template without real values |
+| `.env` | Local credentials; ignored by Git |
+| `links.txt` | Default scraper input |
+| `.product_scrape_progress.json` | Completed URLs and full-scrape resume state |
+| `.product_names_progress.json` | Optional name-only workflow state |
+| `product_names.json` | Optional name-only output |
+| `products_merged/product_*/data.json` | Structured uploader input |
+| `products_merged/product_*/images/` | Downloaded local images |
+| `upload_state.sqlite3` | Persistent uploader state |
+| `LEARNING.md` | Detailed walkthrough of the actual code |
+
+Generated data and state files do not exist in a fresh checkout.
+
+## Data contract
+
+Each scraped product is stored as:
+
+```text
+products_merged/
+└── product_00001/
+    ├── data.json
+    └── images/
+        ├── product_00001_1.webp
+        └── product_00001_2.webp
+```
+
+A representative `data.json` contains:
+
+```json
+{
+  "title": "نام محصول",
+  "english_name": "English Product Name",
+  "regular_price": "200000",
+  "sale_price": "150000",
+  "categories": ["مراقبت پوست"],
+  "short_description": "...",
+  "description": "...",
+  "attributes": {
+    "برند": "نمونه"
+  },
+  "images": [
+    "https://source.example/product.webp"
+  ],
+  "local_images": [
+    "images/product_00001_1.webp"
+  ],
+  "source_url": "https://source.example/product/example/"
+}
+```
+
+Uploader-required fields are `title`, `english_name`, `regular_price`, and at least one valid `local_images` entry.
+
+## Installation
+
+Python 3.11 or newer is recommended.
 
 ```powershell
 python -m pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-اگر فرمان `python` به محیط دیگری اشاره می‌کند، در ویندوز می‌توان از `py -3.11` استفاده کرد.
+If `python` resolves to another environment on Windows:
 
-## متغیرهای محیطی
+```powershell
+py -3.11 -m pip install -r requirements.txt
+```
 
-فایل `.env` را با مقادیر واقعی خود کامل کنید:
+## Configuration
+
+Add your own credentials to `.env`:
 
 ```dotenv
 WOOCOMMERCE_CONSUMER_KEY=ck_xxxxxxxxxxxxxxxxxxxx
@@ -127,117 +168,155 @@ WORDPRESS_APP_PASSWORD=xxxx xxxx xxxx xxxx xxxx xxxx
 NOJASHOP_URL=https://example.com
 ```
 
-متغیر `NOJASHOP_URL` اختیاری است و در نبود آن، مقدار پیش‌فرض داخل برنامه استفاده می‌شود.
+`NOJASHOP_URL` is optional. The uploader otherwise uses the default URL configured in `api-product-post.py`.
 
-## نحوه اجرای اسکریپر
+The WordPress account must have permission to upload media. Use a dedicated Application Password, not the account's normal password.
 
-ابتدا در `links.txt` هر خط یک نشانی مستقیم محصول یا دسته‌بندی قرار دهید:
+## Running the full scraper
+
+Place one direct product or category URL on each line of `links.txt`:
+
+```text
+https://mosbatesabz.com/product/example/
+https://mosbatesabz.com/product-category/example/
+```
+
+Run the default full scrape:
 
 ```powershell
 python product_pipeline.py
 ```
 
-برای ورودی دیگر یا تعداد کارگر متفاوت:
+This writes complete products to `products_merged` and resumes through `.product_scrape_progress.json`.
+
+Use another input or output path:
 
 ```powershell
-python product_pipeline.py names my-links.json --workers 4
+python product_pipeline.py scrape my-links.json --output products_merged --workers 4
 ```
 
-پس از آماده شدن `product_names.json`، نام‌ها را با محصولات موجود ادغام کنید:
+The worker count affects category-page discovery. Product records and their images are written sequentially so each completed URL has a clear persistence boundary.
+
+## Optional name-only workflow
+
+Collect names without creating full product folders:
+
+```powershell
+python product_pipeline.py names links.txt --workers 4
+```
+
+Merge collected English names into existing product folders:
 
 ```powershell
 python product_pipeline.py merge-names products products-1 products_merged
 ```
 
-آزمون داخلی:
+Uncertain matches are reported in `unmatched_products.json` rather than applied automatically.
 
-```powershell
-python product_pipeline.py self-test
-```
+## Running the uploader
 
-## نحوه اجرای آپلودر
+### 1. Validate locally
 
-ابتدا همه محصولات را بدون اتصال و تغییر سرور بررسی کنید:
+No API requests or state changes are made:
 
 ```powershell
 python api-product-post.py --all
 ```
 
-اعتبارسنجی یک محصول:
+Validate one product:
 
 ```powershell
 python api-product-post.py --product product_00001
 ```
 
-ساخت پیش‌نویس‌ها در سرور:
+### 2. Synchronize drafts
 
 ```powershell
 python api-product-post.py --all --commit --yes
 ```
 
-انتشار مستقیم فقط در صورت اطمینان:
+### 3. Publish only after review
 
 ```powershell
 python api-product-post.py --all --commit --yes --publish
 ```
 
-گزینه‌های مهم شامل `--limit`، `--tracked`، `--media-workers`، `--write-delay` و `--verify-existing` هستند.
+Useful controls:
 
-## مدیریت خطا و ادامه کار
+| Option | Effect |
+|---|---|
+| `--limit N` | Process only the first `N` bulk-selected products |
+| `--tracked` | Process products already recorded in SQLite |
+| `--media-workers N` | Use 1–4 concurrent media workers |
+| `--write-delay SECONDS` | Set the minimum delay between API writes |
+| `--verify-existing` | Recheck checkpointed remote media and products |
+| `--state PATH` | Use another SQLite state file |
 
-- `get` برای پاسخ ناموفق از `raise_for_status` استفاده می‌کند.
-- `fetch_name` خطای درخواست را ثبت می‌کند و نشانی ناموفق را تکمیل‌شده حساب نمی‌کند.
-- `.product_names_progress.json` نشانی‌های کامل‌شده را نگه می‌دارد.
-- `save_json` ابتدا فایل موقت می‌سازد تا احتمال ناقص شدن خروجی کم شود.
-- `SiteAPI.request` خطاهای شبکه و وضعیت‌های `429`، `502`، `503` و `504` را تا پنج بار با فاصله افزایشی تکرار می‌کند.
-- `upload_state.sqlite3` از آپلود دوباره رسانه و ایجاد دوباره محصول جلوگیری می‌کند.
-- `SKU` و هش بدنه محصول برای تشخیص محصول موجود یا بدون تغییر استفاده می‌شوند.
-- جدول `failures` مرحله ناموفق هر محصول را نگه می‌دارد.
-- اجرای `--all --commit --yes` از آخرین نشانگر موفق ادامه پیدا می‌کند.
+## Reliability model
 
-ثبت گزارش در فایل جداگانه پیاده‌سازی نشده است؛ پیام‌ها در خروجی ترمینال و خطاهای محصول در `SQLite` نگه‌داری می‌شوند.
+### Scraper
 
-## نکات امنیتی
+- Input-file SHA-256 prevents reuse of URL discovery state for a different input.
+- Product URLs are deduplicated before indexing.
+- Required scraped fields are validated before a product is saved.
+- Images are written to temporary files before replacement.
+- A URL is marked complete only after its images and `data.json` are saved.
+- Failed URLs remain pending for the next run.
 
-- فایل `.env` و کلیدهای واقعی را در `Git` ثبت نکنید.
-- از رمز اصلی حساب `WordPress` استفاده نکنید؛ یک `Application Password` جدا بسازید.
-- دسترسی کاربر `WordPress` را به حداقل مجوز لازم محدود کنید.
-- کلیدها و هدر احراز هویت را در گزارش یا تصویر صفحه منتشر نکنید.
-- قوانین وب‌سایت هدف، فاصله درخواست‌ها و محدودیت‌های سرویس را رعایت کنید.
-- پیش از `--publish`، یک اجرای آزمایشی و سپس ساخت پیش‌نویس انجام دهید.
+### Uploader
 
-## محدودیت‌ها
+- Local data is validated before server access.
+- HTTP 429, 502, 503, and 504 responses are retried up to five times.
+- API writes are rate-limited by a shared lock and configurable delay.
+- Media identity uses the local path, file hash, stable slug, and remote ID.
+- Product identity uses the folder name as SKU.
+- Payload hashes prevent unchanged product writes.
+- Failed stages are recorded as `preflight`, `taxonomies`, `media`, or `product`.
+- The bulk cursor advances only after a successful product.
 
-- تغییر ساختار `HTML` یا انتخابگرهای وب‌سایت هدف می‌تواند استخراج را متوقف کند.
-- اسکریپر فعلی فقط نام فارسی و انگلیسی را استخراج می‌کند؛ اطلاعات کامل محصول باید از قبل موجود باشد.
-- تشخیص نام انگلیسی دارای یک روش جایگزین اکتشافی است و ممکن است به بررسی دستی نیاز داشته باشد.
-- خطاهای شبکه، محدودیت نرخ و تنظیمات احراز هویت سرور بر سرعت و موفقیت آپلود اثر دارند.
-- تطبیق نام‌های ناموفق خودکار اعمال نمی‌شود و باید از `unmatched_products.json` بررسی شود.
-- آزمون خودکار آپلودر و آزمون یکپارچه با سرور واقعی وجود ندارد.
+## Security
 
-## مسیر توسعه آینده
+- Never commit `.env`, API keys, or WordPress credentials.
+- Use a dedicated WordPress Application Password.
+- Give the API user only the permissions required for products and media.
+- Never print authorization headers or secrets while debugging.
+- Keep the image path containment validation in `load_product`.
+- Run a dry run and create drafts before publishing.
+- Respect the source website's terms, robots policy, and request limits.
 
-- افزودن استخراج کامل قیمت، توضیحات، ویژگی‌ها و تصاویر در اسکریپر فعلی
-- افزودن آزمون‌های واحد برای اعتبارسنجی و ساخت بدنه محصول
-- گزارش پیشرفت و خطاهای قابل جست‌وجو
-- خروجی `CSV` برای بازبینی دستی
-- پشتیبانی از `Docker` برای راه‌اندازی یکسان
-- رابط مدیریتی فقط در صورت نیاز عملیاتی واقعی
+## Limitations
 
-## مهارت‌های نمایش‌داده‌شده در این پروژه
+- Extraction depends on the source website's current HTML and CSS selectors.
+- English-name fallback detection is heuristic and may need manual review.
+- Price normalization assumes integer currency values.
+- Gallery downloads are sequential and may be slow for image-heavy catalogs.
+- A stable input URL order is important because product indices become SKUs.
+- There is no live integration test against a staging WordPress installation.
+- External GIFs may not render on networks that block Giphy; all technical information remains available in text.
 
-- خودکارسازی با `Python`
-- استخراج و تحلیل `HTML`
-- مدیریت صفحه‌بندی و پردازش هم‌زمان
-- پردازش و نرمال‌سازی داده
-- کار با `JSON`، فایل و `SQLite`
-- یکپارچه‌سازی `REST API`
-- خودکارسازی `WordPress` و `WooCommerce`
-- اعتبارسنجی ورودی و مدیریت خطا
-- طراحی جریان قابل ادامه و جلوگیری از تکرار
+## Development roadmap
 
-## خلاصه مناسب رزومه
+Practical next improvements, if the project needs them:
 
-> Built a Python automation pipeline for product-name discovery, structured data validation, WordPress media upload, and idempotent WooCommerce product synchronization using REST APIs and SQLite-backed state management.
+- Add fixture-based parser tests for multiple real page layouts.
+- Record structured scrape failures alongside completed URLs.
+- Detect content type from image responses instead of relying on URL suffixes.
+- Add a staging integration test for WordPress media and WooCommerce products.
+- Export a review report before publication.
+- Add Docker support only when reproducible deployment becomes necessary.
 
-برای پروفایل فریلنسری: یک خط لوله خودکار با `Python` برای جمع‌آوری و تکمیل اطلاعات محصول، اعتبارسنجی فایل‌ها، آپلود تصاویر و همگام‌سازی امن محصولات با `WooCommerce` طراحی و پیاده‌سازی شده است.
+## Verification
+
+Run the built-in extraction and merge checks:
+
+```powershell
+python product_pipeline.py self-test
+```
+
+Compile both entry points:
+
+```powershell
+python -m py_compile product_pipeline.py api-product-post.py
+```
+
+For a detailed explanation of the implementation, read [`LEARNING.md`](LEARNING.md).
