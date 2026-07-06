@@ -21,6 +21,8 @@ import requests
 SITE_URL = "https://nojashop.com"
 PRODUCTS_DIR = Path("products_merged")
 STATE_FILE = Path("upload_state.sqlite3")
+ENGLISH_META_KEY = "نام_انگلیسی"
+ENGLISH_FIELD_KEY = "field_6a3a3088beb7f"
 INVISIBLE_MARKS = str.maketrans("", "", "\u200e\u200f\u200b\ufeff")
 SHOW_MORE = "\u0646\u0645\u0627\u06cc\u0634 \u0628\u06cc\u0634\u062a\u0631"
 IMAGE_MIMES = {
@@ -188,6 +190,9 @@ def load_product(product_dir):
     title = clean_text(data.get("title"))
     if not title:
         raise ImportFailure(f"{product_dir.name}: title is empty")
+    english_name = clean_text(data.get("english_name"))
+    if not english_name:
+        raise ImportFailure(f"{product_dir.name}: english_name is empty")
 
     price = data.get("regular_price")
     try:
@@ -210,6 +215,7 @@ def load_product(product_dir):
         raise ImportFailure(f"{product_dir.name}: no images")
 
     data["title"] = title
+    data["english_name"] = english_name
     data["regular_price"] = str(price)
     return data, images
 
@@ -251,6 +257,11 @@ class State:
                 product_key TEXT PRIMARY KEY,
                 stage TEXT NOT NULL,
                 message TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS settings (
+                name TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
             """
@@ -328,6 +339,14 @@ class State:
                     stage=excluded.stage, message=excluded.message, updated_at=excluded.updated_at
                 """,
                 (product_key, stage, str(error), now()),
+            )
+
+    def save_cursor(self, product_key):
+        with self.db:
+            self.db.execute(
+                """INSERT INTO settings VALUES ('all_cursor', ?, ?)
+                   ON CONFLICT(name) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at""",
+                (product_key, now()),
             )
 
 
@@ -614,6 +633,10 @@ class Importer:
             "categories": categories,
             "attributes": attributes,
             "images": images,
+            "meta_data": [
+                {"key": ENGLISH_META_KEY, "value": data["english_name"]},
+                {"key": f"_{ENGLISH_META_KEY}", "value": ENGLISH_FIELD_KEY},
+            ],
         }
         if data.get("sale_price") not in (None, ""):
             payload["sale_price"] = str(data["sale_price"])
@@ -638,6 +661,7 @@ class Importer:
                     payload_hash = digest()
                 if saved["payload_hash"] == payload_hash and remote.get("status") == payload["status"]:
                     return remote, "unchanged"
+                self.set_meta_ids(payload, remote)
                 product = self.api.update_product(remote["id"], payload)
                 self.state.save_product(product_key, payload_hash, product)
                 return product, "updated"
@@ -648,6 +672,7 @@ class Importer:
         if matches:
             if matches[0].get("status") not in {"draft", payload["status"]}:
                 raise ImportFailure(f"Refusing to adopt non-draft product with SKU {product_key!r}")
+            self.set_meta_ids(payload, matches[0])
             product = self.api.update_product(matches[0]["id"], payload)
             action = "recovered"
         else:
@@ -655,6 +680,20 @@ class Importer:
             action = "created"
         self.state.save_product(product_key, payload_hash, product)
         return product, action
+
+    @staticmethod
+    def set_meta_ids(payload, remote):
+        remote_meta = remote.get("meta_data", [])
+        for item in payload["meta_data"]:
+            matches = [saved for saved in remote_meta if saved.get("key") == item["key"]]
+            if len(matches) > 1:
+                raise ImportFailure(f"Product {remote['id']} has duplicate {item['key']} metadata")
+            if matches:
+                item["id"] = matches[0]["id"]
+        payload["meta_data"].extend(
+            {"id": item["id"], "key": "english_name", "value": None}
+            for item in remote_meta if item.get("key") == "english_name"
+        )
 
     def run(self, product_dir):
         product_key = product_dir.name
@@ -688,6 +727,29 @@ def select_products(args):
             paths = paths[: args.limit]
     else:
         paths = sorted(path for path in PRODUCTS_DIR.glob("product_*") if path.is_dir())
+        if args.commit:
+            cursor = None
+            if args.state.is_file():
+                database = sqlite3.connect(args.state)
+                try:
+                    cursor = database.execute(
+                        "SELECT value FROM settings WHERE name='all_cursor'"
+                    ).fetchone()
+                except sqlite3.OperationalError:
+                    pass
+                finally:
+                    database.close()
+            if not cursor:
+                answer = input("Last product number already processed [0]: ").strip() or "0"
+                answer = answer.replace("product-", "").replace("product_", "")
+                if not answer.isdigit() or int(answer) > len(paths):
+                    raise ImportFailure(f"Enter a number from 0 to {len(paths)}")
+                cursor = (f"product_{int(answer):05d}",)
+                state = State(args.state)
+                state.save_cursor(cursor[0])
+                state.close()
+            paths = [path for path in paths if path.name > cursor[0]]
+            print(f"Resuming after {cursor[0]}: {len(paths)} product(s) remaining")
         if args.limit:
             paths = paths[: args.limit]
     missing = [str(path) for path in paths if not path.is_dir()]
@@ -789,6 +851,8 @@ def main(argv=None):
                 try:
                     product, action = importer.run(path)
                     print(f"[{index}/{len(paths)}] {path.name}: {action}, WooCommerce ID {product['id']}")
+                    if args.all:
+                        state.save_cursor(path.name)
                 except Exception as exc:
                     failures += 1
                     print(f"[{index}/{len(paths)}] {path.name}: ERROR: {exc}")

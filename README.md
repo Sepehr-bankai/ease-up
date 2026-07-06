@@ -1,182 +1,243 @@
-# Mosbatesabz Product Scraper Pipeline
+# خط لوله جمع‌آوری و انتقال محصولات به ووکامرس
 
-A multi-phase scraping and post-processing pipeline that collects product data (titles, prices, categories, descriptions, attributes, and images) from **mosbatesabz.com** and prepares it for use in another store under a new brand name.
+## معرفی کوتاه
 
----
+این پروژه یک جریان خودکار برای آماده‌سازی و انتقال اطلاعات محصول است و دو بخش اصلی دارد:
 
-## How It Works — Overview
+- جمع‌آوری نشانی محصولات و نام فارسی و انگلیسی آن‌ها از وب‌سایت هدف
+- اعتبارسنجی داده‌ها، آپلود رسانه از طریق `WordPress REST API` و ساخت یا به‌روزرسانی محصول در `WooCommerce REST API`
 
-The pipeline runs in four sequential steps:
+اسکریپر فعلی فقط نام فارسی و انگلیسی را جمع‌آوری می‌کند و آن‌ها را به فایل‌های محصول موجود می‌افزاید. اطلاعاتی مانند قیمت، توضیحات، دسته‌بندی، ویژگی‌ها و مسیر تصاویر باید از قبل در فایل هر محصول وجود داشته باشند.
 
-```
-Phase 1                Phase 2                 Phase 3                  Phase 4
-Collect URLs    →    Scrape Products    →    Post-Process JSON    →    Analyse Categories
-(gather links)      (open each link)        (clean & rebrand)         (summary report)
-```
+## این پروژه چه مشکلی را حل می‌کند؟
 
----
+جمع‌آوری دستی اطلاعات، آپلود تکراری تصاویر و ساخت تک‌به‌تک محصولات در `WooCommerce` زمان‌بر و مستعد خطاست. این پروژه بخش قابل‌توجهی از مسیر زیر را خودکار می‌کند:
 
-## Project Structure
+1. کشف صفحات محصول از صفحات دسته‌بندی
+2. جمع‌آوری و یکسان‌سازی نام محصولات
+3. تکمیل فایل‌های محصول موجود
+4. اعتبارسنجی داده و تصاویر
+5. ساخت دسته‌بندی‌ها و ویژگی‌های لازم
+6. آپلود رسانه و ایجاد یا به‌روزرسانی محصول
 
-```
-.
-├── first-phase-product-links-gatherer.py   # Phase 1 — collect product URLs
-├── second-phase-product-links-opener.py    # Phase 2 — scrape each product page
-├── process_products.py                     # Phase 3 — clean & rebrand JSON files
-├── Categories.py                           # Phase 4 — analyse & report categories
-│
-├── product_links.txt                       # Output of Phase 1 (auto-created)
-├── progress.txt                            # Resume tracker for Phase 2 (auto-created)
-│
-├── products/                               # Output of Phase 2 (auto-created)
-│   ├── product_0001/
-│   │   ├── data.json
-│   │   └── images/
-│   │       ├── product_0001_1.webp
-│   │       └── ...
-│   ├── product_0002/
-│   │   └── ...
-│   └── ...
-│
-├── categories_summary.json                 # Output of Phase 4
-└── categories_report.txt                   # Output of Phase 4
-```
+## قابلیت‌های اصلی
 
----
+- دریافت ورودی از `links.txt` یا فایل `JSON`
+- تشخیص تعداد صفحات دسته‌بندی و ساخت نشانی صفحات بعدی
+- پردازش هم‌زمان درخواست‌ها با تعداد کارگر محدود
+- حذف نشانی‌های تکراری با حفظ ترتیب
+- ذخیره امن فایل‌های `JSON` با فایل موقت
+- ادامه جمع‌آوری از وضعیت ذخیره‌شده در `.product_names_progress.json`
+- تطبیق دقیق و نرمال‌شده نام‌ها و تولید پیشنهاد برای موارد ناموفق
+- اعتبارسنجی عنوان، نام انگلیسی، قیمت و مسیر تصاویر پیش از آپلود
+- حالت آزمایشی بدون تغییر سرور
+- ساخت یا استفاده مجدد از دسته‌بندی، ویژگی و مقدار ویژگی
+- جلوگیری از آپلود دوباره رسانه با هش `SHA-256` و شناسه رسانه
+- جلوگیری از ایجاد محصول تکراری با `SKU`
+- تلاش مجدد برای خطاهای شبکه و کدهای موقت `HTTP`
+- ثبت وضعیت محصولات، رسانه‌ها، نگاشت‌ها و خطاها در `SQLite`
+- ایجاد محصول به‌صورت پیش‌نویس و انتشار فقط با گزینه صریح
 
-## Requirements
+## ساختار پروژه
 
-- Python 3.8+
-- The following packages:
+| مسیر | کاربرد |
+|---|---|
+| `product_pipeline.py` | ورودی اصلی جمع‌آوری نام‌ها، تشخیص صفحه‌بندی، ادامه کار و ادغام نام انگلیسی |
+| `api-product-post.py` | ورودی اصلی اعتبارسنجی، آپلود رسانه و ایجاد یا به‌روزرسانی محصول |
+| `requirements.txt` | وابستگی‌های اجرایی `requests` و `beautifulsoup4` |
+| `.env` | اطلاعات محرمانه اتصال؛ در `Git` نادیده گرفته می‌شود |
+| `.env.example` | الگوی نام متغیرهای محیطی بدون مقدار واقعی |
+| `links.txt` | ورودی پیش‌فرض اسکریپر؛ هر خط یک نشانی محصول یا دسته‌بندی |
+| `.product_names_progress.json` | وضعیت ادامه اسکریپر و فهرست نشانی‌های تکمیل‌شده |
+| `product_names.json` | نام فارسی و انگلیسی محصولات جمع‌آوری‌شده |
+| `unmatched_products.json` | گزارش فایل‌هایی که نام انگلیسی آن‌ها با اطمینان تطبیق داده نشده است |
+| `products_merged/product_*/data.json` | ورودی ساختاریافته هر محصول برای آپلودر |
+| `products_merged/product_*/images/` | تصاویر محلی هر محصول |
+| `upload_state.sqlite3` | وضعیت رسانه‌ها، محصولات، نگاشت‌ها، خطاها و نشانگر ادامه آپلود |
 
-```bash
-pip install requests beautifulsoup4
-```
+فایل‌ها و پوشه‌های خروجی در شروع کار ممکن است وجود نداشته باشند و هنگام اجرای مراحل ساخته شوند.
 
-> No browser automation is needed — all four scripts use plain HTTP requests.
+## روند کار اسکریپر
 
----
+ورودی اسکریپر تابع `main` در `product_pipeline.py` است.
 
-## Step-by-Step Execution Guide
+1. `load_inputs` نشانی‌ها را از `links.txt` یا فایل `JSON` می‌خواند و معتبر بودن `http` یا `https` را بررسی می‌کند.
+2. `discover_product_urls` نشانی مستقیم محصول را جدا می‌کند و برای ورودی‌های دسته‌بندی، `category_page` را اجرا می‌کند.
+3. `category_page` با انتخابگر `a.product-image-link[href]` محصولات را پیدا می‌کند. اعداد `.page-numbers` نیز تعداد صفحات را مشخص می‌کنند.
+4. صفحات دوم به بعد با الگوی `/page/<number>/` ساخته و هم‌زمان دریافت می‌شوند.
+5. `dict.fromkeys` نشانی‌های تکراری را بدون برهم زدن ترتیب حذف می‌کند.
+6. `product_names` عنوان فارسی و `english_name` نام انگلیسی را از `HTML` استخراج می‌کنند.
+7. `export_names` نتایج را در `product_names.json` و وضعیت را در `.product_names_progress.json` ذخیره می‌کند.
+8. درخواست ناموفق چاپ می‌شود و در اجرای بعدی دوباره در صف قرار می‌گیرد. توقف با صفحه‌کلید نیز وضعیت فعلی را نگه می‌دارد.
+9. فرمان `merge-names` با `merge_names` نام انگلیسی را به فایل‌های محصول اضافه می‌کند. موارد بدون تطبیق در `unmatched_products.json` ثبت می‌شوند.
 
-### Phase 1 — Collect Product URLs
+## روند کار آپلودر ووکامرس
 
-**Script:** `first-phase-product-links-gatherer.py`
+ورودی آپلودر تابع `main` در `api-product-post.py` است.
 
-Opens every page of a category listing, finds all product links using the `product-image-link` CSS class, and saves them to `product_links.txt`.
+1. `load_env` تنظیمات را از `.env` می‌خواند و `select_products` پوشه‌های درخواستی را از `products_merged` انتخاب می‌کند.
+2. بدون `--commit`، تابع `dry_run` فقط داده و تصاویر را با `load_product` اعتبارسنجی می‌کند.
+3. در اجرای واقعی، `SiteAPI.check_permissions` دسترسی `WooCommerce` و مجوز آپلود رسانه در `WordPress` را بررسی می‌کند.
+4. `Importer.run` داده را می‌خواند، دسته‌بندی‌ها و ویژگی‌ها را با `resolve_taxonomies` آماده می‌کند و تصاویر را به `ensure_images` می‌سپارد.
+5. `ensure_media` ابتدا وضعیت `SQLite` و هش فایل را بررسی می‌کند؛ سپس رسانه موجود را پیدا می‌کند یا با `POST` در `WordPress REST API` آپلود می‌کند.
+6. شناسه رسانه‌ها در آرایه `images` قرار می‌گیرد و `save_product` بدنه محصول شامل عنوان، قیمت، توضیحات، دسته‌بندی‌ها، ویژگی‌ها، تصاویر و نام انگلیسی را می‌سازد.
+7. محصول با `SKU` برابر نام پوشه، مانند `product_00001`، پیدا می‌شود. محصول موجود با `PUT` به‌روزرسانی و محصول جدید با `POST` ساخته می‌شود.
+8. `State` نتیجه موفق یا مرحله و متن خطا را در `upload_state.sqlite3` ذخیره می‌کند. نشانگر اجرای گروهی فقط پس از موفقیت جلو می‌رود.
 
-**Before running**, open the script and set these two variables at the top:
+## جریان کلی داده
 
-| Variable | Description |
-|----------|-------------|
-| `BASE_URL` | The first page of the category you want to scrape |
-| `TOTAL_PAGES` | How many listing pages to go through |
-
-**Run:**
-```bash
-python first-phase-product-links-gatherer.py
-```
-
-**Output:** `product_links.txt` — one product URL per line.
-
----
-
-### Phase 2 — Scrape Each Product Page
-
-**Script:** `second-phase-product-links-opener.py`
-
-Reads `product_links.txt`, visits each URL, and extracts:
-- Title, regular price, sale price
-- Categories, short description, full description
-- Product attributes (weight, brand, dimensions, etc.)
-- Gallery images (downloaded locally)
-
-Each product is saved in its own subfolder under `products/`:
-
-```
-products/product_0001/
-    data.json       ← all product fields as JSON
-    images/
-        product_0001_1.webp
-        product_0001_2.webp
-```
-
-**Supports resuming** — if the script is interrupted, it picks up from where it left off using `progress.txt`. Simply re-run the same command.
-
-**Run:**
-```bash
-python second-phase-product-links-opener.py
+```text
+وب‌سایت هدف
+    ↓
+کشف صفحه‌ها و نام‌ها در product_pipeline.py
+    ↓
+product_names.json و .product_names_progress.json
+    ↓
+ادغام نام انگلیسی در data.json محصولات موجود
+    ↓
+اعتبارسنجی داده و تصاویر در api-product-post.py
+    ↓
+آپلود تصویر در WordPress REST API
+    ↓
+اتصال شناسه رسانه به بدنه محصول
+    ↓
+ایجاد یا به‌روزرسانی محصول در WooCommerce REST API
 ```
 
-**Output:** `products/` folder with one subfolder per product.
+## نصب و راه‌اندازی
 
----
+پروژه به `Python 3.11` یا نسخه جدیدتر نیاز دارد.
 
-### Phase 3 — Clean and Rebrand JSON Files
-
-**Script:** `process_products.py`
-
-Goes through every `data.json` file produced in Phase 2 and:
-
-1. **Removes** the `"images"` key (external URLs), keeping only `"local_images"` (local paths).
-2. **Replaces** all variants of the old store name with the new store name `فروشگاه آنلاین نوژا شاپ`.
-
-Old name variants that are replaced:
-
-| Old variant |
-|-------------|
-| داروخانه آنلاین مثبت سبز |
-| داروخانه انلاین مثبت سبز |
-| داروخانه آنلاین |
-| داروخانه انلاین |
-| مثبت سبز |
-| (and zero-width-joiner variants of the above) |
-
-**Run:**
-```bash
-python process_products.py
+```powershell
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-**Output:** All `data.json` files are updated in-place. A full log is written to `process_log.txt`.
+اگر فرمان `python` به محیط دیگری اشاره می‌کند، در ویندوز می‌توان از `py -3.11` استفاده کرد.
 
----
+## متغیرهای محیطی
 
-### Phase 4 — Analyse Categories
+فایل `.env` را با مقادیر واقعی خود کامل کنید:
 
-**Script:** `Categories.py`
-
-Reads every `data.json` file, collects all category values, deduplicates them, and produces a ranked report so you can see what categories exist and how many products belong to each one.
-
-**Run:**
-```bash
-python Categories.py
+```dotenv
+WOOCOMMERCE_CONSUMER_KEY=ck_xxxxxxxxxxxxxxxxxxxx
+WOOCOMMERCE_CONSUMER_SECRET=cs_xxxxxxxxxxxxxxxxxxxx
+WORDPRESS_USER=your_username
+WORDPRESS_APP_PASSWORD=xxxx xxxx xxxx xxxx xxxx xxxx
+NOJASHOP_URL=https://example.com
 ```
 
-**Output:**
+متغیر `NOJASHOP_URL` اختیاری است و در نبود آن، مقدار پیش‌فرض داخل برنامه استفاده می‌شود.
 
-| File | Contents |
-|------|----------|
-| `categories_report.txt` | Human-readable ranked list + per-category product titles |
-| `categories_summary.json` | Machine-readable version of the same data |
+## نحوه اجرای اسکریپر
 
-Use this report to decide which categories to keep, merge, or add in your new store.
+ابتدا در `links.txt` هر خط یک نشانی مستقیم محصول یا دسته‌بندی قرار دهید:
 
----
+```powershell
+python product_pipeline.py
+```
 
-## Resuming After Interruption
+برای ورودی دیگر یا تعداد کارگر متفاوت:
 
-| Phase | Resume behaviour |
-|-------|-----------------|
-| Phase 1 | Reruns from scratch — ensure it completes in one run or adjust `TOTAL_PAGES` accordingly |
-| Phase 2 | Fully resumable — `progress.txt` tracks the last successfully processed index; just re-run |
-| Phase 3 | Safe to re-run — replacements are idempotent (running twice will not break anything) |
-| Phase 4 | Safe to re-run at any time |
+```powershell
+python product_pipeline.py names my-links.json --workers 4
+```
 
----
+پس از آماده شدن `product_names.json`، نام‌ها را با محصولات موجود ادغام کنید:
 
-## Notes
+```powershell
+python product_pipeline.py merge-names products products-1 products_merged
+```
 
-- A 1-second delay is added between requests in Phases 1 and 2 to avoid overwhelming the server.
-- Phase 2 retries failed image downloads up to 3 times before skipping.
-- All JSON files are saved with `ensure_ascii=False` so Persian text is stored as readable Unicode, not escaped sequences.
-- Phase 3 sorts replacement variants by length (longest first) to prevent shorter substrings from being replaced before longer, more specific phrases.
+آزمون داخلی:
+
+```powershell
+python product_pipeline.py self-test
+```
+
+## نحوه اجرای آپلودر
+
+ابتدا همه محصولات را بدون اتصال و تغییر سرور بررسی کنید:
+
+```powershell
+python api-product-post.py --all
+```
+
+اعتبارسنجی یک محصول:
+
+```powershell
+python api-product-post.py --product product_00001
+```
+
+ساخت پیش‌نویس‌ها در سرور:
+
+```powershell
+python api-product-post.py --all --commit --yes
+```
+
+انتشار مستقیم فقط در صورت اطمینان:
+
+```powershell
+python api-product-post.py --all --commit --yes --publish
+```
+
+گزینه‌های مهم شامل `--limit`، `--tracked`، `--media-workers`، `--write-delay` و `--verify-existing` هستند.
+
+## مدیریت خطا و ادامه کار
+
+- `get` برای پاسخ ناموفق از `raise_for_status` استفاده می‌کند.
+- `fetch_name` خطای درخواست را ثبت می‌کند و نشانی ناموفق را تکمیل‌شده حساب نمی‌کند.
+- `.product_names_progress.json` نشانی‌های کامل‌شده را نگه می‌دارد.
+- `save_json` ابتدا فایل موقت می‌سازد تا احتمال ناقص شدن خروجی کم شود.
+- `SiteAPI.request` خطاهای شبکه و وضعیت‌های `429`، `502`، `503` و `504` را تا پنج بار با فاصله افزایشی تکرار می‌کند.
+- `upload_state.sqlite3` از آپلود دوباره رسانه و ایجاد دوباره محصول جلوگیری می‌کند.
+- `SKU` و هش بدنه محصول برای تشخیص محصول موجود یا بدون تغییر استفاده می‌شوند.
+- جدول `failures` مرحله ناموفق هر محصول را نگه می‌دارد.
+- اجرای `--all --commit --yes` از آخرین نشانگر موفق ادامه پیدا می‌کند.
+
+ثبت گزارش در فایل جداگانه پیاده‌سازی نشده است؛ پیام‌ها در خروجی ترمینال و خطاهای محصول در `SQLite` نگه‌داری می‌شوند.
+
+## نکات امنیتی
+
+- فایل `.env` و کلیدهای واقعی را در `Git` ثبت نکنید.
+- از رمز اصلی حساب `WordPress` استفاده نکنید؛ یک `Application Password` جدا بسازید.
+- دسترسی کاربر `WordPress` را به حداقل مجوز لازم محدود کنید.
+- کلیدها و هدر احراز هویت را در گزارش یا تصویر صفحه منتشر نکنید.
+- قوانین وب‌سایت هدف، فاصله درخواست‌ها و محدودیت‌های سرویس را رعایت کنید.
+- پیش از `--publish`، یک اجرای آزمایشی و سپس ساخت پیش‌نویس انجام دهید.
+
+## محدودیت‌ها
+
+- تغییر ساختار `HTML` یا انتخابگرهای وب‌سایت هدف می‌تواند استخراج را متوقف کند.
+- اسکریپر فعلی فقط نام فارسی و انگلیسی را استخراج می‌کند؛ اطلاعات کامل محصول باید از قبل موجود باشد.
+- تشخیص نام انگلیسی دارای یک روش جایگزین اکتشافی است و ممکن است به بررسی دستی نیاز داشته باشد.
+- خطاهای شبکه، محدودیت نرخ و تنظیمات احراز هویت سرور بر سرعت و موفقیت آپلود اثر دارند.
+- تطبیق نام‌های ناموفق خودکار اعمال نمی‌شود و باید از `unmatched_products.json` بررسی شود.
+- آزمون خودکار آپلودر و آزمون یکپارچه با سرور واقعی وجود ندارد.
+
+## مسیر توسعه آینده
+
+- افزودن استخراج کامل قیمت، توضیحات، ویژگی‌ها و تصاویر در اسکریپر فعلی
+- افزودن آزمون‌های واحد برای اعتبارسنجی و ساخت بدنه محصول
+- گزارش پیشرفت و خطاهای قابل جست‌وجو
+- خروجی `CSV` برای بازبینی دستی
+- پشتیبانی از `Docker` برای راه‌اندازی یکسان
+- رابط مدیریتی فقط در صورت نیاز عملیاتی واقعی
+
+## مهارت‌های نمایش‌داده‌شده در این پروژه
+
+- خودکارسازی با `Python`
+- استخراج و تحلیل `HTML`
+- مدیریت صفحه‌بندی و پردازش هم‌زمان
+- پردازش و نرمال‌سازی داده
+- کار با `JSON`، فایل و `SQLite`
+- یکپارچه‌سازی `REST API`
+- خودکارسازی `WordPress` و `WooCommerce`
+- اعتبارسنجی ورودی و مدیریت خطا
+- طراحی جریان قابل ادامه و جلوگیری از تکرار
+
+## خلاصه مناسب رزومه
+
+> Built a Python automation pipeline for product-name discovery, structured data validation, WordPress media upload, and idempotent WooCommerce product synchronization using REST APIs and SQLite-backed state management.
+
+برای پروفایل فریلنسری: یک خط لوله خودکار با `Python` برای جمع‌آوری و تکمیل اطلاعات محصول، اعتبارسنجی فایل‌ها، آپلود تصاویر و همگام‌سازی امن محصولات با `WooCommerce` طراحی و پیاده‌سازی شده است.
