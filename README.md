@@ -130,12 +130,12 @@ A representative `data.json` contains:
     "برند": "نمونه"
   },
   "images": [
-    "https://source.example/product.webp"
+    "<source-image-url>"
   ],
   "local_images": [
     "images/product_00001_1.webp"
   ],
-  "source_url": "https://source.example/product/example/"
+  "source_url": "<source-product-url>"
 }
 ```
 
@@ -161,14 +161,15 @@ py -3.11 -m pip install -r requirements.txt
 Add your own credentials to `.env`:
 
 ```dotenv
+SOURCE_SITE_URL=https://your-source-site.example
+WOOCOMMERCE_URL=https://your-store.example
 WOOCOMMERCE_CONSUMER_KEY=ck_xxxxxxxxxxxxxxxxxxxx
 WOOCOMMERCE_CONSUMER_SECRET=cs_xxxxxxxxxxxxxxxxxxxx
 WORDPRESS_USER=your_username
 WORDPRESS_APP_PASSWORD=xxxx xxxx xxxx xxxx xxxx xxxx
-NOJASHOP_URL=https://example.com
 ```
 
-`NOJASHOP_URL` is optional. The uploader otherwise uses the default URL configured in `api-product-post.py`.
+Both site URLs are required. They live only in `.env`; neither Python entry point contains a real website address. Scraper input is restricted to the configured source host and its subdomains.
 
 The WordPress account must have permission to upload media. Use a dedicated Application Password, not the account's normal password.
 
@@ -177,8 +178,8 @@ The WordPress account must have permission to upload media. Use a dedicated Appl
 Place one direct product or category URL on each line of `links.txt`:
 
 ```text
-https://mosbatesabz.com/product/example/
-https://mosbatesabz.com/product-category/example/
+<product-url>
+<category-url>
 ```
 
 Run the default full scrape:
