@@ -14,11 +14,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path, PureWindowsPath
+from urllib.parse import urlparse
 
 import requests
 
 
-SITE_URL = "https://nojashop.com"
 PRODUCTS_DIR = Path("products_merged")
 STATE_FILE = Path("upload_state.sqlite3")
 ENGLISH_META_KEY = "نام_انگلیسی"
@@ -354,6 +354,8 @@ class SiteAPI:
     RETRY_STATUS = {429, 502, 503, 504}
 
     def __init__(self, site_url, consumer_key, consumer_secret, wp_user, wp_password, write_delay=2.5):
+        if urlparse(site_url).scheme not in {"http", "https"} or not urlparse(site_url).netloc:
+            raise ImportFailure("WOOCOMMERCE_URL must be a valid HTTP URL")
         self.site_url = site_url.rstrip("/")
         self.woo_auth = (consumer_key, consumer_secret)
         self.wp_auth = (wp_user, wp_password)
@@ -365,7 +367,7 @@ class SiteAPI:
     def session(self):
         if not hasattr(self.local, "session"):
             self.local.session = requests.Session()
-            self.local.session.headers["User-Agent"] = "NojaShop importer/1.0"
+            self.local.session.headers["User-Agent"] = "Product importer/1.0"
         return self.local.session
 
     def request(self, method, path, *, wordpress=False, write=False, **kwargs):
@@ -779,7 +781,6 @@ def parser():
     result.add_argument("--commit", action="store_true", help="Allow writes to WordPress and WooCommerce")
     result.add_argument("--publish", action="store_true", help="Publish imported products instead of drafting them")
     result.add_argument("--yes", action="store_true", help="Confirm a bulk --all commit")
-    result.add_argument("--site", default=os.getenv("NOJASHOP_URL", SITE_URL))
     result.add_argument("--state", type=Path, default=STATE_FILE)
     result.add_argument("--write-delay", type=float, default=1.0, help="Minimum seconds between API writes")
     result.add_argument("--media-workers", type=int, default=2, help="Concurrent media checks/uploads (1-4)")
@@ -812,6 +813,7 @@ def main(argv=None):
             return 0
 
         names = (
+            "WOOCOMMERCE_URL",
             "WOOCOMMERCE_CONSUMER_KEY",
             "WOOCOMMERCE_CONSUMER_SECRET",
             "WORDPRESS_USER",
@@ -830,10 +832,10 @@ def main(argv=None):
         state = State(args.state)
         try:
             api = SiteAPI(
-                args.site,
                 os.environ[names[0]],
                 os.environ[names[1]],
                 os.environ[names[2]],
+                os.environ[names[3]],
                 app_password,
                 args.write_delay,
             )
